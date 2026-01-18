@@ -17,7 +17,7 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
 
-    return true;
+    return (0 == system(cmd));
 }
 
 /**
@@ -95,5 +95,61 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 
     va_end(args);
 
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        return false;
+    }
+
+    if (pid == 0) { // Child Process
+        // 1. Open the output file
+        // O_TRUNC overwrites the file (standard > redirection)
+        // Use O_APPEND if you want to mimic >> redirection
+        int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd == -1) {
+            perror("open");
+            exit(EXIT_FAILURE);
+        }
+
+        // 2. Redirect standard out (STDOUT_FILENO) to the file
+        if (dup2(fd, STDOUT_FILENO) == -1) {
+            perror("dup2");
+            close(fd);
+            exit(EXIT_FAILURE);
+        }
+
+        // 3. Redirect STDERR → same file (equivalent to 2>&1)
+        if (dup2(fd, STDERR_FILENO) == -1) {
+            perror("dup2 stderr");
+            exit(EXIT_FAILURE);
+        }
+
+
+        // 4. Close the original file descriptor
+        close(fd);
+
+        // 5. Execute the command
+        // Note: command[0] must be the full path (e.g., /bin/ls)
+        execv(command[0], command);
+
+        // execv only returns if there is an error
+        perror("execv");
+        exit(EXIT_FAILURE);
+    } 
+    else { // Parent Process
+        int status;
+        // Wait for the specific child to finish
+        if (waitpid(pid, &status, 0) == -1) {
+            return false;
+        }
+        
+        // Return true only if the child exited normally and with success (0)
+        return WIFEXITED(status) && (WEXITSTATUS(status) == 0);
+    }
+
+
     return true;
 }
+
+
+
