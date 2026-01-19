@@ -61,7 +61,39 @@ bool do_exec(int count, ...)
 
     va_end(args);
 
-    return true;
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        return false;
+    }
+
+    if (pid == 0) {
+        // Child process
+        execv(command[0], command);
+
+        // If execv returns, it's an error
+        perror("execv");
+        exit(EXIT_FAILURE);
+    }
+    else
+    {
+        // --- PARENT PROCESS ---
+        int status;
+        // Wait for the specific child process to terminate
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid");
+            return false;
+        }
+
+        // Check if the child process exited normally
+        if (WIFEXITED(status)) {
+            // Return true only if the command finished with exit code 0
+            return (WEXITSTATUS(status) == 0);
+        }
+
+        return false;
+    }
+
 }
 
 /**
@@ -147,8 +179,6 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         return WIFEXITED(status) && (WEXITSTATUS(status) == 0);
     }
 
-
-    return true;
 }
 
 
