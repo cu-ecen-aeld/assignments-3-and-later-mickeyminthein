@@ -25,8 +25,13 @@ void signal_handler(int signo)
     exit_requested = 1;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
+    int daemon_mode = 0;
+
+if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+    daemon_mode = 1;
+}
     int server_fd = -1;
     int client_fd = -1;
     struct sockaddr_in server_addr, client_addr;
@@ -60,6 +65,47 @@ int main()
         close(server_fd);
         return -1;
     }
+    printf("aesdsocket binding successful!.");
+
+    //Run as Daemon
+    if (daemon_mode) {
+        pid_t pid = fork();
+
+        if (pid < 0) {
+            syslog(LOG_ERR, "Fork failed");
+            return -1;
+        }
+
+        if (pid > 0) {
+            // Parent exits
+            exit(0);
+        }
+
+        // Child continues
+
+        // Create new session
+        if (setsid() < 0) {
+            syslog(LOG_ERR, "setsid failed");
+            return -1;
+        }
+
+        // Change working directory
+        if (chdir("/") < 0) {
+            syslog(LOG_ERR, "chdir failed");
+            return -1;
+        }
+
+        // Redirect standard file descriptors to /dev/null
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > 2) {
+                close(devnull);
+            }
+        }
+    }
 
     // Listen
     if (listen(server_fd, BACKLOG) == -1) {
@@ -67,6 +113,8 @@ int main()
         close(server_fd);
         return -1;
     }
+
+    puts("Waiting for connections ...");
 
     while (!exit_requested) {
 
