@@ -1,5 +1,6 @@
 #CC := gcc
 CFLAGS := -Wall -g
+LIBS = -lpthread
 TARGET := aesdsocket
 
 CROSS_COMPILE ?= 
@@ -13,7 +14,7 @@ CC := $(CROSS_COMPILE)gcc
 all: $(TARGET)
 
 $(TARGET): aesdsocket.c
-	$(CC) $(CFLAGS) -o $(TARGET) aesdsocket.c
+	$(CC) $(CFLAGS) -o $(TARGET) aesdsocket.c $(LIBS)
 
 clean:
 	rm -f $(TARGET)
