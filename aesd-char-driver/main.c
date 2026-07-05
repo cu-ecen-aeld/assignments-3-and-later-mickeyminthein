@@ -21,7 +21,7 @@
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
+MODULE_AUTHOR("Min Min Thein"); /** TODO: fill in your name **/
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
@@ -32,6 +32,9 @@ int aesd_open(struct inode *inode, struct file *filp)
     /**
      * TODO: handle open
      */
+    struct aesd_dev *dev; /* device information */
+    dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
+    filp->private_data = dev;
     return 0;
 }
 
@@ -52,6 +55,41 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     /**
      * TODO: handle read
      */
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry *entry;
+    size_t entry_offset = 0;
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+    if(*f_pos >= dev->buffer.size)
+    {
+        retval = 0;
+        goto out;
+    }
+    if(count > dev->buffer.size - *f_pos)
+    {
+        count = dev->buffer.size - *f_pos;
+    }
+
+    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset);
+    if (entry == NULL)
+    {
+        retval = -EINVAL;
+        goto out;
+    }
+
+    size_t bytes_available = entry->size - entry_offset;
+    size_t bytes_to_copy = (count < bytes_available) ? count : bytes_available;
+
+    if (copy_to_user(buf, entry->buffptr + entry_offset, bytes_to_copy))
+    {
+        retval = -EFAULT;
+        goto out;       
+    }
+    *f_pos += count;
+    retval = count;
+out:
+    mutex_unlock(&dev->lock);   
     return retval;
 }
 
@@ -63,8 +101,84 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     /**
      * TODO: handle write
      */
+    struct aesd_dev *dev = filp->private_data;
+    char *tmp;
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    tmp = kmalloc(dev->write_entry_buffer, dev->write_entry_size + count, GFP_KERNEL);
+    if (!tmp)
+    {
+        retval = -ENOMEM;
+        goto out;
+    }
+    dev->write_entry_buffer = tmp;
+    if (copy_from_user(dev->write_entry_buffer + dev->write_entry_size, buf, count))
+    {
+        retval = -EFAULT;
+        goto out;
+    }
+    dev->write_entry_size += count; 
+    retval = count;
+
+    /* Check for newline */
+    char *newline_pos;
+    while ((newline_pos = memchr(dev->write_entry_buffer, '\n', dev->write_entry_size)) != NULL)
+    {
+        size_t line_len = (newline_pos - dev->write_entry_buffer) + 1;
+        size_t remainder_len = dev->write_entry_size - line_len;
+        struct aesd_buffer_entry new_entry;
+
+        new_entry.buffptr = kmalloc(line_len, GFP_KERNEL);
+        if (!new_entry.buffptr) 
+        { 
+            retval = -ENOMEM; 
+            goto out; 
+        }
+        memcpy(new_entry.buffptr, dev->write_entry_buffer, line_len);
+        new_entry.size = line_len;
+
+        if (dev->buffer.full)
+            kfree(dev->buffer.entry[dev->buffer.in_offs].buffptr);
+        aesd_circular_buffer_add_entry(&dev->buffer, &new_entry);
+
+        if (remainder_len > 0)
+        {
+            char *remainder = kmalloc(remainder_len, GFP_KERNEL);
+            if (!remainder) { retval = -ENOMEM; goto out; }
+            memcpy(remainder, dev->write_entry_buffer + line_len, remainder_len);
+            kfree(dev->write_entry_buffer);
+            dev->write_entry_buffer = remainder;
+            dev->write_entry_size = remainder_len;
+        }
+        else
+        {
+            kfree(dev->write_entry_buffer);
+            dev->write_entry_buffer = NULL;
+            dev->write_entry_size = 0;
+        }
+    }
+
+    /* Check for newline */
+    // if (memchr(dev->write_entry_buffer, '\n', dev->write_entry_size) != NULL)
+    // {
+    //     /* Process the complete line */
+    //     struct aesd_buffer_entry new_entry;
+    //     new_entry.buffptr = dev->write_entry_buffer;
+    //     new_entry.size = dev->write_entry_size;
+
+    //     aesd_circular_buffer_add_entry(&dev->buffer, &new_entry);
+
+    //     /* Reset write entry buffer and size */
+    //     dev->write_entry_buffer = NULL;
+    //     dev->write_entry_size = 0;
+    // }   
+
+out:
+    mutex_unlock(&dev->lock);   
     return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
@@ -105,7 +219,11 @@ int aesd_init_module(void)
     /**
      * TODO: initialize the AESD specific portion of the device
      */
-
+    mutex_init(&aesd_device.lock);  
+    aesd_circular_buffer_init(&aesd_device.buffer);
+    aesd_device.write_entry_buffer = NULL;
+    aesd_device.write_entry_size = 0;
+    
     result = aesd_setup_cdev(&aesd_device);
 
     if( result ) {
@@ -124,7 +242,18 @@ void aesd_cleanup_module(void)
     /**
      * TODO: cleanup AESD specific poritions here as necessary
      */
+    for (int i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++) {
+        if (aesd_device.buffer.entry[i].buffptr) {
+            kfree(aesd_device.buffer.entry[i].buffptr);
+            aesd_device.buffer.entry[i].buffptr = NULL;
+        }
+    }
 
+    if (aesd_device.write_entry_buffer) {
+        kfree(aesd_device.write_entry_buffer);
+        aesd_device.write_entry_buffer = NULL;
+    }
+    mutex_destroy(&aesd_device.lock);
     unregister_chrdev_region(devno, 1);
 }
 
