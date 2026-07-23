@@ -17,10 +17,20 @@
 #include <fcntl.h>
 #include "queue.h"   /* BSD SLIST macros */
 
+// Add build switch to read from char driver instead of file. This is for testing the char driver.
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#if USE_AESD_CHAR_DEVICE
+#define DATA_FILE "/dev/aesdchar"
+#else
+#define DATA_FILE "/var/tmp/aesdsocketdata"
+#endif
+
 /* ── Configuration ─────────────────────────────────────────────────────── */
 #define PORT            "9000"
 #define BACKLOG         10
-#define DATA_FILE       "/var/tmp/aesdsocketdata"
 #define BUFFER_SIZE     1024
 #define TIMESTAMP_INTERVAL_S  10
 
@@ -335,6 +345,7 @@ int main(int argc, char *argv[])
         close(STDERR_FILENO);
     }
 
+#if !USE_AESD_CHAR_DEVICE
     /* ── Start timer thread (in parent / daemon process) ── */
     pthread_t timer_tid;
     if (pthread_create(&timer_tid, NULL, timer_thread, NULL) != 0) {
@@ -342,6 +353,7 @@ int main(int argc, char *argv[])
         close(sockfd);
         return 1;
     }
+#endif
 
     syslog(LOG_INFO, "Server listening on port %s", PORT);
 
@@ -408,8 +420,10 @@ int main(int argc, char *argv[])
     /* ── Graceful shutdown ── */
     syslog(LOG_INFO, "Shutdown signal received — waiting for threads");
 
+#if !USE_AESD_CHAR_DEVICE
     /* Signal & join the timer thread */
     pthread_join(timer_tid, NULL);
+#endif
 
     /* Join all remaining connection threads */
     slist_node_t *node, *tmp;
@@ -421,7 +435,10 @@ int main(int argc, char *argv[])
     }
 
     close(sockfd);
+#if !USE_AESD_CHAR_DEVICE
     remove(DATA_FILE);
+    //unlink(DATA_FILE);
+#endif
     pthread_mutex_destroy(&file_mutex);
 
     syslog(LOG_INFO, "Server shut down cleanly");
